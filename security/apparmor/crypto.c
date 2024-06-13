@@ -30,66 +30,71 @@ unsigned int aa_hash_size(void)
 }
 
 int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start,
-			 size_t len)
+                         size_t len)
 {
-	struct {
-		struct shash_desc shash;
-		char ctx[crypto_shash_descsize(apparmor_tfm)];
-	} desc;
-	int error = -ENOMEM;
-	u32 le32_version = cpu_to_le32(version);
+    struct shash_desc *desc;
+    int error = -ENOMEM;
+    u32 le32_version = cpu_to_le32(version);
+    size_t desc_size;
 
-	if (!apparmor_tfm)
-		return 0;
+    if (!apparmor_tfm)
+        return 0;
 
-	profile->hash = kzalloc(apparmor_hash_size, GFP_KERNEL);
-	if (!profile->hash)
-		goto fail;
+    profile->hash = kzalloc(apparmor_hash_size, GFP_KERNEL);
+    if (!profile->hash)
+        goto fail;
 
-	desc.shash.tfm = apparmor_tfm;
-	desc.shash.flags = 0;
+    desc_size = sizeof(*desc) + crypto_shash_descsize(apparmor_tfm);
+    desc = kzalloc(desc_size, GFP_KERNEL);
+    if (!desc)
+        goto fail;
 
-	error = crypto_shash_init(&desc.shash);
-	if (error)
-		goto fail;
-	error = crypto_shash_update(&desc.shash, (u8 *) &le32_version, 4);
-	if (error)
-		goto fail;
-	error = crypto_shash_update(&desc.shash, (u8 *) start, len);
-	if (error)
-		goto fail;
-	error = crypto_shash_final(&desc.shash, profile->hash);
-	if (error)
-		goto fail;
+    desc->tfm = apparmor_tfm;
+    desc->flags = 0;
 
-	return 0;
+    error = crypto_shash_init(desc);
+    if (error)
+        goto fail;
+    error = crypto_shash_update(desc, (u8 *)&le32_version, 4);
+    if (error)
+        goto fail;
+    error = crypto_shash_update(desc, (u8 *)start, len);
+    if (error)
+        goto fail;
+    error = crypto_shash_final(desc, profile->hash);
+    if (error)
+        goto fail;
+
+    kfree(desc);
+    return 0;
 
 fail:
-	kfree(profile->hash);
-	profile->hash = NULL;
+    kfree(profile->hash);
+    profile->hash = NULL;
+    kfree(desc);
 
-	return error;
+    return error;
 }
 
 static int __init init_profile_hash(void)
 {
-	struct crypto_shash *tfm;
+    struct crypto_shash *tfm;
 
-	if (!apparmor_initialized)
-		return 0;
+    if (!apparmor_initialized)
+        return 0;
 
-	tfm = crypto_alloc_shash("sha1", 0, CRYPTO_ALG_ASYNC);
-	if (IS_ERR(tfm)) {
-		int error = PTR_ERR(tfm);
-		AA_ERROR("failed to setup profile sha1 hashing: %d\n", error);
-		return error;
-	}
-	apparmor_tfm = tfm;
-	apparmor_hash_size = crypto_shash_digestsize(apparmor_tfm);
+    tfm = crypto_alloc_shash("sha1", 0, CRYPTO_ALG_ASYNC);
+    if (IS_ERR(tfm)) {
+        int error = PTR_ERR(tfm);
+        AA_ERROR("failed to setup profile sha1 hashing: %d\n", error);
+        return error;
+    }
+    apparmor_tfm = tfm;
+    apparmor_hash_size = crypto_shash_digestsize(apparmor_tfm);
 
-	aa_info_message("AppArmor sha1 policy hashing enabled");
+    aa_info_message("AppArmor sha1 policy hashing enabled");
 
-	return 0;
+    return 0;
 }
 
 late_initcall(init_profile_hash);
