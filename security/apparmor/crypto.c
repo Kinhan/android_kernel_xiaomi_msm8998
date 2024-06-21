@@ -1,27 +1,9 @@
-/*
- * AppArmor security module
- *
- * This file contains AppArmor policy loading interface function definitions.
- *
- * Copyright 2013 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
- *
- * Fns to provide a checksum of policy that has been loaded this can be
- * compared to userspace policy compiles to check loaded policy is what
- * it should be.
- */
-
 #include <crypto/hash.h>
-
+#include <linux/slab.h>
 #include "include/apparmor.h"
 #include "include/crypto.h"
 
 static unsigned int apparmor_hash_size;
-
 static struct crypto_shash *apparmor_tfm;
 
 unsigned int aa_hash_size(void)
@@ -29,15 +11,12 @@ unsigned int aa_hash_size(void)
 	return apparmor_hash_size;
 }
 
-int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start,
-			 size_t len)
+int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start, size_t len)
 {
-	struct {
-		struct shash_desc shash;
-		char ctx[crypto_shash_descsize(apparmor_tfm)];
-	} desc;
+	struct shash_desc *desc;
 	int error = -ENOMEM;
 	u32 le32_version = cpu_to_le32(version);
+	int desc_size = sizeof(struct shash_desc) + crypto_shash_descsize(apparmor_tfm);
 
 	if (!apparmor_tfm)
 		return 0;
@@ -46,28 +25,34 @@ int aa_calc_profile_hash(struct aa_profile *profile, u32 version, void *start,
 	if (!profile->hash)
 		goto fail;
 
-	desc.shash.tfm = apparmor_tfm;
-	desc.shash.flags = 0;
-
-	error = crypto_shash_init(&desc.shash);
-	if (error)
-		goto fail;
-	error = crypto_shash_update(&desc.shash, (u8 *) &le32_version, 4);
-	if (error)
-		goto fail;
-	error = crypto_shash_update(&desc.shash, (u8 *) start, len);
-	if (error)
-		goto fail;
-	error = crypto_shash_final(&desc.shash, profile->hash);
-	if (error)
+	desc = kzalloc(desc_size, GFP_KERNEL);
+	if (!desc)
 		goto fail;
 
+	desc->tfm = apparmor_tfm;
+	desc->flags = 0;
+
+	error = crypto_shash_init(desc);
+	if (error)
+		goto fail_desc;
+	error = crypto_shash_update(desc, (u8 *)&le32_version, 4);
+	if (error)
+		goto fail_desc;
+	error = crypto_shash_update(desc, (u8 *)start, len);
+	if (error)
+		goto fail_desc;
+	error = crypto_shash_final(desc, profile->hash);
+	if (error)
+		goto fail_desc;
+
+	kfree(desc);
 	return 0;
 
+fail_desc:
+	kfree(desc);
 fail:
 	kfree(profile->hash);
 	profile->hash = NULL;
-
 	return error;
 }
 
